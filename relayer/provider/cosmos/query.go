@@ -25,6 +25,7 @@ import (
 	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
 	ibctmtypes "github.com/cosmos/ibc-go/v3/modules/light-clients/07-tendermint/types"
 	tmclient "github.com/cosmos/ibc-go/v3/modules/light-clients/07-tendermint/types"
+	interquerytypes "github.com/defund-labs/defund/x/query/types"
 	"github.com/pkg/errors"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/light"
@@ -154,6 +155,58 @@ func (cc *CosmosProvider) QueryTendermintProof(ctx context.Context, height int64
 
 	revision := clienttypes.ParseChainID(cc.PCfg.ChainID)
 	return res.Value, proofBz, clienttypes.NewHeight(revision, uint64(res.Height)+1), nil
+}
+
+// QueryTendermintProof performs an ABCI query with the given key and returns
+// the value of the query, the proto encoded merkle proof, and the height of
+// the Tendermint block containing the state root. The desired tendermint height
+// to perform the query should be set in the client context. The query will be
+// performed at one below this height (at the IAVL version) in order to obtain
+// the correct merkle proof. Proof queries at height less than or equal to 2 are
+// not supported. Queries with a client context height of 0 will perform a query
+// at the lastest state available.
+// Issue: https://github.com/cosmos/cosmos-sdk/issues/6567
+func (cc *CosmosProvider) QueryStateABCI(ctx context.Context, height int64, path string, key []byte) (*abci.ResponseQuery, []byte, clienttypes.Height, error) {
+	// ABCI queries at heights 1, 2 or less than or equal to 0 are not supported.
+	// Base app does not support queries for height less than or equal to 1.
+	// Therefore, a query at height 2 would be equivalent to a query at height 3.
+	// A height of 0 will query with the lastest state.
+	if height != 0 && height <= 2 {
+		return nil, nil, clienttypes.Height{}, fmt.Errorf("proof queries at height <= 2 are not supported")
+	}
+
+	// Use the IAVL height if a valid tendermint height is passed in.
+	// A height of 0 will query with the latest state.
+	if height != 0 {
+		height--
+	}
+
+	req := abci.RequestQuery{
+		Path:   path,
+		Height: height,
+		Data:   key,
+		Prove:  true,
+	}
+
+	res, err := cc.QueryABCI(ctx, req)
+	if err != nil {
+		return nil, nil, clienttypes.Height{}, err
+	}
+
+	merkleProof, err := commitmenttypes.ConvertProofs(res.ProofOps)
+	if err != nil {
+		return nil, nil, clienttypes.Height{}, err
+	}
+
+	cdc := codec.NewProtoCodec(cc.Codec.InterfaceRegistry)
+
+	proofBz, err := cdc.Marshal(&merkleProof)
+	if err != nil {
+		return nil, nil, clienttypes.Height{}, err
+	}
+
+	revision := clienttypes.ParseChainID(cc.PCfg.ChainID)
+	return &res, proofBz, clienttypes.NewHeight(revision, uint64(res.Height)+1), nil
 }
 
 // QueryClientStateResponse retrieves the latest consensus state for a client in state at a given height
@@ -819,4 +872,40 @@ func DefaultPageRequest() *querytypes.PageRequest {
 		Limit:      1000,
 		CountTotal: true,
 	}
+}
+
+// QueryInterqueries returns a list of all interquery requests
+func (cc *CosmosProvider) QueryInterqueries(ctx context.Context, height uint64) ([]interquerytypes.Interquery, error) {
+	qc := interquerytypes.NewQueryClient(cc)
+	res, err := qc.InterqueryAll(ctx, &interquerytypes.QueryAllInterqueryRequest{
+		Pagination: DefaultPageRequest(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.Interquery, nil
+}
+
+// QueryInterqueryResults returns a list of all interquery results
+func (cc *CosmosProvider) QueryInterqueryResults(ctx context.Context, height uint64) ([]interquerytypes.InterqueryResult, error) {
+	qc := interquerytypes.NewQueryClient(cc)
+	res, err := qc.InterqueryResultAll(ctx, &interquerytypes.QueryAllInterqueryResultRequest{
+		Pagination: DefaultPageRequest(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.Interqueryresult, nil
+}
+
+// QueryInterqueryTimeoutResults returns a list of all timeout interquery results
+func (cc *CosmosProvider) QueryInterqueryTimeoutResults(ctx context.Context, height uint64) ([]interquerytypes.InterqueryTimeoutResult, error) {
+	qc := interquerytypes.NewQueryClient(cc)
+	res, err := qc.InterqueryTimeoutResultAll(ctx, &interquerytypes.QueryAllInterqueryTimeoutResultRequest{
+		Pagination: DefaultPageRequest(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.Interquerytimeoutresult, nil
 }

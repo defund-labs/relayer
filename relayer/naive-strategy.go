@@ -8,6 +8,7 @@ import (
 	chantypes "github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
 	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
 	"github.com/cosmos/relayer/v2/relayer/provider"
+	interquerytypes "github.com/defund-labs/defund/x/query/types"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
@@ -143,6 +144,115 @@ func UnrelayedSequences(ctx context.Context, src, dst *Chain, srcChannel *chanty
 	}
 
 	return rs, nil
+}
+
+// Helper function to check if a string is within a slice
+func contains(list []string, str string) bool {
+	for _, value := range list {
+		if value == str {
+			return true
+		}
+	}
+
+	return false
+}
+
+// UnrelayedInterqueries returns the unsubmitted/incomplete interqueries for the client-id specified in each interquery
+func UnrelayedInterqueries(ctx context.Context, src, dst *Chain) ([]interquerytypes.Interquery, error) {
+	var (
+		pendingInterqueries   = []interquerytypes.Interquery{}
+		submittedInterqueries = []interquerytypes.InterqueryResult{}
+		allInterqueries       = []interquerytypes.Interquery{}
+		timedoutInterqueries  = []interquerytypes.InterqueryTimeoutResult{}
+		completeids           = []string{}
+	)
+
+	srch, _, err := QueryLatestHeights(ctx, src, dst)
+	if err != nil {
+		return nil, err
+	}
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	eg.Go(func() error {
+		// Query all interqueries for src chain
+		return retry.Do(func() error {
+			var err error
+			allInterqueries, err = src.ChainProvider.QueryInterqueries(egCtx, uint64(srch))
+			return err
+		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
+			src.log.Debug(
+				"Failed to query interquery requests",
+				zap.String("chain_id", src.Chainid),
+				zap.Uint("attempt", n+1),
+				zap.Uint("max_attempts", RtyAttNum),
+				zap.Error(err),
+			)
+			srch, _ = src.ChainProvider.QueryLatestHeight(egCtx)
+		}))
+	})
+
+	eg.Go(func() error {
+		// Query all submitted/successful interqueries for src chain
+		return retry.Do(func() error {
+			var err error
+			submittedInterqueries, err = src.ChainProvider.QueryInterqueryResults(egCtx, uint64(srch))
+			return err
+		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
+			src.log.Debug(
+				"Failed to query submitted interqueries",
+				zap.String("chain_id", src.Chainid),
+				zap.Uint("attempt", n+1),
+				zap.Uint("max_attempts", RtyAttNum),
+				zap.Error(err),
+			)
+			srch, _ = src.ChainProvider.QueryLatestHeight(egCtx)
+		}))
+	})
+
+	eg.Go(func() error {
+		// Query all timedout interqueries for src chain
+		return retry.Do(func() error {
+			var err error
+			timedoutInterqueries, err = src.ChainProvider.QueryInterqueryTimeoutResults(egCtx, uint64(srch))
+			return err
+		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
+			src.log.Debug(
+				"Failed to query interquery timeouts",
+				zap.String("chain_id", src.Chainid),
+				zap.Uint("attempt", n+1),
+				zap.Uint("max_attempts", RtyAttNum),
+				zap.Error(err),
+			)
+			srch, _ = src.ChainProvider.QueryLatestHeight(egCtx)
+		}))
+	})
+
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+
+	// Add to list of complete ids for interquery results
+	for _, queryresult := range submittedInterqueries {
+		if !contains(completeids, queryresult.Storeid) {
+			completeids = append(completeids, queryresult.Storeid)
+		}
+	}
+	// Add to list of timedout ids for interquery timeout results
+	for _, querytimeout := range timedoutInterqueries {
+		if !contains(completeids, querytimeout.Storeid) {
+			completeids = append(completeids, querytimeout.Storeid)
+		}
+	}
+
+	// For all interquery ids in complete ids, store the pending interquery in list to submit later
+	for _, query := range allInterqueries {
+		if !contains(completeids, query.Storeid) {
+			pendingInterqueries = append(pendingInterqueries, query)
+		}
+	}
+
+	return pendingInterqueries, nil
 }
 
 // UnrelayedAcknowledgements returns the unrelayed sequence numbers between two chains
@@ -441,6 +551,66 @@ func RelayPackets(ctx context.Context, src, dst *Chain, sp *RelaySequences, maxT
 	}
 }
 
+// RelayInterqueries creates transactions to relay packets from src to dst and from dst to src
+func RelayInterqueries(ctx context.Context, src, dst *Chain, iqs []interquerytypes.Interquery, maxTxSize, maxMsgLength uint64) error {
+	// set the maximum relay transaction constraints
+	msgs := &RelayInterqueryMsgs{
+		Msgs:         []provider.RelayerMessage{},
+		MaxTxSize:    maxTxSize,
+		MaxMsgLength: maxMsgLength,
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		srch, dsth, err := QueryLatestHeights(ctx, src, dst)
+		if err != nil {
+			return err
+		}
+
+		eg, egCtx := errgroup.WithContext(ctx)
+		// add messages for interqueries on src
+		eg.Go(func() error {
+			return AddMessagesForInterqueries(egCtx, iqs, src, dst, srch, dsth, &msgs.Msgs)
+		})
+
+		if err = eg.Wait(); err != nil {
+			return err
+		}
+
+		if !msgs.Ready() {
+			src.log.Info(
+				"No packets to relay",
+				zap.String("src_chain_id", src.ChainID()),
+				zap.String("dst_chain_id", dst.ChainID()),
+			)
+			return nil
+		}
+
+		// Prepend non-empty msg lists with UpdateClient
+
+		eg, egCtx = errgroup.WithContext(ctx) // New errgroup because previous egCtx is canceled at this point.
+		eg.Go(func() error {
+			return PrependUpdateClientMsg(egCtx, &msgs.Msgs, src, dst, srch)
+		})
+
+		if err = eg.Wait(); err != nil {
+			return err
+		}
+
+		// send messages to their respective chains
+		if msgs.Send(ctx, src, dst); msgs.Success() {
+			if len(msgs.Msgs) > 1 {
+				dst.logInterqueryRelayed(src, len(msgs.Msgs)-1)
+			}
+		}
+
+		// If the context terminated while sending messages, return that error.
+		return ctx.Err()
+	}
+}
+
 // AddMessagesForSequences constructs RecvMsgs and TimeoutMsgs from sequence numbers on a src chain
 // and adds them to the appropriate queue of msgs for both src and dst
 func AddMessagesForSequences(ctx context.Context, sequences []uint64, src, dst *Chain, srch, dsth int64, srcMsgs, dstMsgs *[]provider.RelayerMessage, srcChanID, srcPortID, dstChanID, dstPortID string) error {
@@ -482,6 +652,45 @@ func AddMessagesForSequences(ctx context.Context, sequences []uint64, src, dst *
 		if timeoutMsg != nil {
 			*srcMsgs = append(*srcMsgs, timeoutMsg)
 		}
+	}
+
+	return nil
+}
+
+// AddMessagesForInterqueries performs a query for each pending interquery from src on dst chain and then
+// constructs an interquery submit message with the query results for the src chain.
+func AddMessagesForInterqueries(ctx context.Context, queries []interquerytypes.Interquery, src, dst *Chain, srch, dsth int64, msgs *[]provider.RelayerMessage) error {
+	for _, query := range queries {
+		var (
+			msg provider.RelayerMessage
+			err error
+		)
+
+		if err = retry.Do(func() error {
+			msg, err = src.ChainProvider.RelayPacketFromInterquery(ctx, src.ChainProvider, dst.ChainProvider,
+				uint64(srch), uint64(dsth), query, dst.ClientID(), src.ClientID())
+			return err
+		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
+			src.log.Debug(
+				"Failed to relay interquery",
+				zap.String("interquery_id", query.Storeid),
+				zap.String("querying_chain_id", src.ChainID()),
+				zap.String("queried_chain_id", dst.ChainID()),
+				zap.Uint("attempt", n+1),
+				zap.Uint("attempt_limit", RtyAttNum),
+				zap.Error(err),
+			)
+
+			srch, dsth, _ = QueryLatestHeights(ctx, src, dst)
+		})); err != nil {
+			return err
+		}
+
+		// Depending on the type of message to be relayed, we need to send to different chains
+		if msg != nil {
+			*msgs = append(*msgs, msg)
+		}
+
 	}
 
 	return nil

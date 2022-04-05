@@ -18,15 +18,15 @@ type ActiveChannel struct {
 }
 
 // StartRelayer starts the main relaying loop and returns a channel that will contain any control-flow related errors.
-func StartRelayer(ctx context.Context, src, dst *Chain, filter ChannelFilter, maxTxSize, maxMsgLength uint64) chan error {
+func StartRelayer(ctx context.Context, src, dst *Chain, interquery bool, filter ChannelFilter, maxTxSize, maxMsgLength uint64) chan error {
 	errorChan := make(chan error, 1)
 
-	go relayerMainLoop(ctx, src, dst, filter, maxTxSize, maxMsgLength, errorChan)
+	go relayerMainLoop(ctx, src, dst, interquery, filter, maxTxSize, maxMsgLength, errorChan)
 	return errorChan
 }
 
 // relayerMainLoop is the main loop of the relayer.
-func relayerMainLoop(ctx context.Context, src, dst *Chain, filter ChannelFilter, maxTxSize, maxMsgLength uint64, errCh chan<- error) {
+func relayerMainLoop(ctx context.Context, src, dst *Chain, interquery bool, filter ChannelFilter, maxTxSize, maxMsgLength uint64, errCh chan<- error) {
 	defer close(errCh)
 
 	channels := make(chan *ActiveChannel, 10)
@@ -57,6 +57,11 @@ func relayerMainLoop(ctx context.Context, src, dst *Chain, filter ChannelFilter,
 				channel.active = true
 				go relayUnrelayedPacketsAndAcks(ctx, src, dst, maxTxSize, maxMsgLength, channel, channels)
 			}
+		}
+
+		// Relay pending interqueries for src -> dst
+		if interquery {
+			go relayInterqueryPackets(ctx, src, dst, maxTxSize, maxMsgLength)
 		}
 
 		for channel := range channels {
@@ -185,9 +190,26 @@ func relayUnrelayedPacketsAndAcks(ctx context.Context, src, dst *Chain, maxTxSiz
 	}
 }
 
-// relayUnrelayedPackets fetches unrelayed packet sequence numbers and attempts to relay the associated packets.
-// relayUnrelayedPackets returns true if packets were empty or were successfully relayed.
-// Otherwise, it logs the errors and returns false.
+// relayInterqueryPackets will relay and submit all the pending interqueries from the src chain for the dest chain.
+func relayInterqueryPackets(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLength uint64) {
+
+	for {
+		if ok := relayInterqueries(ctx, src, dst, maxTxSize, maxMsgLength); !ok {
+			return
+		}
+
+		// Wait for a second before continuing, but allow context cancellation to break the flow.
+		select {
+		case <-time.After(time.Second):
+			// Nothing to do.
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// relayInterqueries fetches pending interqueries for the src chain. The pending
+// interqueries are then submitted to the src chain with the dst query data results.
 func relayUnrelayedPackets(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLength uint64, srcChannel *types.IdentifiedChannel) bool {
 	childCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
@@ -258,6 +280,70 @@ func relayUnrelayedPackets(ctx context.Context, src, dst *Chain, maxTxSize, maxM
 			zap.String("src_channel_id", srcChannel.ChannelId),
 			zap.String("dst_chain_id", dst.ChainID()),
 			zap.String("dst_channel_id", srcChannel.Counterparty.ChannelId),
+			zap.Error(err),
+		)
+		// Indicate that we should attempt to keep going.
+		return true
+	}
+
+	return true
+}
+
+// relayUnrelayedPackets fetches unrelayed packet sequence numbers and attempts to relay the associated packets.
+// relayUnrelayedPackets returns true if packets were empty or were successfully relayed.
+// Otherwise, it logs the errors and returns false.
+func relayInterqueries(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLength uint64) bool {
+	childCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	// Fetch any unrelayed sequences depending on the channel order
+	iqs, err := UnrelayedInterqueries(ctx, src, dst)
+	if err != nil {
+		src.log.Warn(
+			"Error retrieving pending interqueries",
+			zap.String("src_chain_id", src.ChainID()),
+			zap.String("dst_chain_id", dst.ChainID()),
+			zap.Error(err),
+		)
+		return false
+	}
+
+	// If there are no unrelayed packets, stop early.
+	if len(iqs) == 0 {
+		src.log.Info(
+			"No interqueries in queue",
+			zap.String("src_chain_id", src.ChainID()),
+			zap.String("dst_chain_id", dst.ChainID()),
+		)
+		return true
+	}
+
+	if len(iqs) > 0 {
+		src.log.Debug(
+			"Unrelayed interqueries",
+			zap.String("src_chain_id", src.ChainID()),
+			zap.String("dst_chain_id", dst.ChainID()),
+		)
+	}
+
+	if err := RelayInterqueries(childCtx, src, dst, iqs, maxTxSize, maxMsgLength); err != nil {
+		// If there was a context cancellation or deadline while attempting to relay packets,
+		// log that and indicate failure.
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			src.log.Warn(
+				"Context finished while waiting for RelayInterqueries to complete",
+				zap.String("src_chain_id", src.ChainID()),
+				zap.String("dst_chain_id", dst.ChainID()),
+				zap.Error(childCtx.Err()),
+			)
+			return false
+		}
+
+		// Otherwise, not a context error, but an application-level error.
+		src.log.Warn(
+			"Relay interqueries error",
+			zap.String("src_chain_id", src.ChainID()),
+			zap.String("dst_chain_id", dst.ChainID()),
 			zap.Error(err),
 		)
 		// Indicate that we should attempt to keep going.

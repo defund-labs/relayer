@@ -27,6 +27,7 @@ import (
 	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
 	tmclient "github.com/cosmos/ibc-go/v3/modules/light-clients/07-tendermint/types"
 	"github.com/cosmos/relayer/v2/relayer/provider"
+	interquerytypes "github.com/defund-labs/defund/x/query/types"
 	"github.com/gogo/protobuf/proto"
 	"github.com/pkg/errors"
 	lens "github.com/strangelove-ventures/lens/client"
@@ -935,6 +936,37 @@ func (cc *CosmosProvider) MsgRelayRecvPacket(ctx context.Context, dst provider.C
 	}
 }
 
+// MsgRelayInterqueryResult constructs the MsgRelayInterqueryResult which is to be sent to the querying chain.
+// The counterparty represents the queried chain being queried.
+func (cc *CosmosProvider) MsgRelayInterqueryResult(ctx context.Context, src, dst provider.ChainProvider, srch, dsth int64, query interquerytypes.Interquery) (provider.RelayerMessage, error) {
+	var (
+		acc string
+		err error
+	)
+	if acc, err = cc.Address(); err != nil {
+		return nil, err
+	}
+
+	res, _, height, err := dst.QueryStateABCI(ctx, dsth, query.Path, query.Key)
+
+	switch {
+	case err != nil:
+		return nil, err
+	default:
+		msg := &interquerytypes.MsgCreateInterqueryResult{
+			Creator:  acc,
+			Storeid:  query.Storeid,
+			Data:     res.Value,
+			Height:   height.RevisionHeight,
+			ClientId: query.ClientId,
+			Success:  true,
+			Proof:    res.ProofOps,
+		}
+
+		return NewCosmosMessage(msg), nil
+	}
+}
+
 // RelayPacketFromSequence relays a packet with a given seq on src and returns recvPacket msgs, timeoutPacketmsgs and error
 func (cc *CosmosProvider) RelayPacketFromSequence(ctx context.Context, src, dst provider.ChainProvider, srch, dsth, seq uint64, dstChanId, dstPortId, dstClientId, srcChanId, srcPortId, srcClientId string) (provider.RelayerMessage, provider.RelayerMessage, error) {
 	txs, err := cc.QueryTxs(ctx, 1, 1000, rcvPacketQuery(srcChanId, int(seq)))
@@ -985,6 +1017,25 @@ func (cc *CosmosProvider) RelayPacketFromSequence(ctx context.Context, src, dst 
 	}
 
 	return nil, nil, fmt.Errorf("should have errored before here")
+}
+
+// RelayPacketFromInterquery relays a query on src and returns msgs, and/or error
+func (cc *CosmosProvider) RelayPacketFromInterquery(ctx context.Context, src, dst provider.ChainProvider, srch, dsth uint64, iq interquerytypes.Interquery, dstClientId, srcClientId string) (provider.RelayerMessage, error) {
+
+	if iq.ClientId == srcClientId {
+		return nil, fmt.Errorf("wrong client id for interquery %d: expected(%d) got(%d)", iq.Storeid, iq.ClientId, srcClientId)
+	}
+
+	if iq.ClientId == srcClientId {
+		result, err := src.MsgRelayInterqueryResult(ctx, src, dst, int64(srch), int64(dsth), iq)
+		if err != nil {
+			return nil, err
+		}
+
+		return result, nil
+	}
+
+	return nil, fmt.Errorf("should have errored before here")
 }
 
 // AcknowledgementFromSequence relays an acknowledgement with a given seq on src, source is the sending chain, destination is the receiving chain

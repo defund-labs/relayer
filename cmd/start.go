@@ -46,7 +46,7 @@ func startCmd(a *appState) *cobra.Command {
 $ %s start demo-path --max-msgs 3
 $ %s start demo-path2 --max-tx-size 10`, appName, appName)),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, src, dst, err := a.Config.ChainsFromPath(args[0])
+			c, src, dst, interquery, err := a.Config.ChainsFromPath(args[0])
 			if err != nil {
 				return err
 			}
@@ -80,7 +80,7 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName)),
 				relaydebug.StartDebugServer(cmd.Context(), log, ln)
 			}
 
-			rlyErrCh := relayer.StartRelayer(cmd.Context(), c[src], c[dst], filter, maxTxSize, maxMsgLength)
+			rlyErrCh := relayer.StartRelayer(cmd.Context(), c[src], c[dst], interquery, filter, maxTxSize, maxMsgLength)
 
 			// NOTE: This block of code is useful for ensuring that the clients tracking each chain do not expire
 			// when there are no packets flowing across the channels. It is currently a source of errors that have been
