@@ -1022,8 +1022,8 @@ func (cc *CosmosProvider) RelayPacketFromSequence(ctx context.Context, src, dst 
 // RelayPacketFromInterquery relays a query on src and returns msgs, and/or error
 func (cc *CosmosProvider) RelayPacketFromInterquery(ctx context.Context, src, dst provider.ChainProvider, srch, dsth uint64, iq interquerytypes.Interquery, dstClientId, srcClientId string) (provider.RelayerMessage, error) {
 
-	if iq.ClientId == srcClientId {
-		return nil, fmt.Errorf("wrong client id for interquery %d: expected(%d) got(%d)", iq.Storeid, iq.ClientId, srcClientId)
+	if iq.ClientId != srcClientId {
+		return nil, fmt.Errorf("wrong client id for interquery %s: expected(%s) got(%s)", iq.Storeid, iq.ClientId, srcClientId)
 	}
 
 	if iq.ClientId == srcClientId {
