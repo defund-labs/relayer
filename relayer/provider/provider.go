@@ -110,7 +110,7 @@ type QueryProvider interface {
 	QueryTxs(ctx context.Context, page, limit int, events []string) ([]*ctypes.ResultTx, error)
 	QueryLatestHeight(ctx context.Context) (int64, error)
 	QueryHeaderAtHeight(ctx context.Context, height int64) (ibcexported.Header, error)
-	QueryStateABCI(ctx context.Context, height int64, path string, key []byte) (*abci.ResponseQuery, []byte, clienttypes.Height, error)
+	QueryStateABCI(ctx context.Context, height int64, path string, key []byte) (*abci.ResponseQuery, clienttypes.Height, error)
 
 	// bank
 	QueryBalance(ctx context.Context, keyName string) (sdk.Coins, error)

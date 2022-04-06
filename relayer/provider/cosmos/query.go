@@ -166,13 +166,13 @@ func (cc *CosmosProvider) QueryTendermintProof(ctx context.Context, height int64
 // not supported. Queries with a client context height of 0 will perform a query
 // at the lastest state available.
 // Issue: https://github.com/cosmos/cosmos-sdk/issues/6567
-func (cc *CosmosProvider) QueryStateABCI(ctx context.Context, height int64, path string, key []byte) (*abci.ResponseQuery, []byte, clienttypes.Height, error) {
+func (cc *CosmosProvider) QueryStateABCI(ctx context.Context, height int64, path string, key []byte) (*abci.ResponseQuery, clienttypes.Height, error) {
 	// ABCI queries at heights 1, 2 or less than or equal to 0 are not supported.
 	// Base app does not support queries for height less than or equal to 1.
 	// Therefore, a query at height 2 would be equivalent to a query at height 3.
 	// A height of 0 will query with the lastest state.
 	if height != 0 && height <= 2 {
-		return nil, nil, clienttypes.Height{}, fmt.Errorf("proof queries at height <= 2 are not supported")
+		return nil, clienttypes.Height{}, fmt.Errorf("proof queries at height <= 2 are not supported")
 	}
 
 	// Use the IAVL height if a valid tendermint height is passed in.
@@ -190,23 +190,11 @@ func (cc *CosmosProvider) QueryStateABCI(ctx context.Context, height int64, path
 
 	res, err := cc.QueryABCI(ctx, req)
 	if err != nil {
-		return nil, nil, clienttypes.Height{}, err
-	}
-
-	merkleProof, err := commitmenttypes.ConvertProofs(res.ProofOps)
-	if err != nil {
-		return nil, nil, clienttypes.Height{}, err
-	}
-
-	cdc := codec.NewProtoCodec(cc.Codec.InterfaceRegistry)
-
-	proofBz, err := cdc.Marshal(&merkleProof)
-	if err != nil {
-		return nil, nil, clienttypes.Height{}, err
+		return nil, clienttypes.Height{}, err
 	}
 
 	revision := clienttypes.ParseChainID(cc.PCfg.ChainID)
-	return &res, proofBz, clienttypes.NewHeight(revision, uint64(res.Height)+1), nil
+	return &res, clienttypes.NewHeight(revision, uint64(res.Height)+1), nil
 }
 
 // QueryClientStateResponse retrieves the latest consensus state for a client in state at a given height

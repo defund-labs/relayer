@@ -947,7 +947,7 @@ func (cc *CosmosProvider) MsgRelayInterqueryResult(ctx context.Context, src, dst
 		return nil, err
 	}
 
-	res, _, height, err := dst.QueryStateABCI(ctx, dsth, query.Path, query.Key)
+	res, height, err := dst.QueryStateABCI(ctx, dsth, query.Path, query.Key)
 
 	switch {
 	case err != nil:
