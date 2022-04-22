@@ -248,7 +248,9 @@ func UnrelayedInterqueries(ctx context.Context, src, dst *Chain) ([]interqueryty
 	// For all interquery ids in complete ids, store the pending interquery in list to submit later
 	for _, query := range allInterqueries {
 		if !contains(completeids, query.Storeid) {
-			pendingInterqueries = append(pendingInterqueries, query)
+			if uint64(srch) > query.TimeoutHeight {
+				pendingInterqueries = append(pendingInterqueries, query)
+			}
 		}
 	}
 
