@@ -160,11 +160,7 @@ func contains(list []string, str string) bool {
 // UnrelayedInterqueries returns the unsubmitted/incomplete interqueries for the client-id specified in each interquery
 func UnrelayedInterqueries(ctx context.Context, src, dst *Chain) ([]interquerytypes.Interquery, error) {
 	var (
-		pendingInterqueries   = []interquerytypes.Interquery{}
-		submittedInterqueries = []interquerytypes.InterqueryResult{}
-		allInterqueries       = []interquerytypes.Interquery{}
-		timedoutInterqueries  = []interquerytypes.InterqueryTimeoutResult{}
-		completeids           = []string{}
+		pendingInterqueries = []interquerytypes.Interquery{}
 	)
 
 	srch, _, err := QueryLatestHeights(ctx, src, dst)
@@ -178,7 +174,7 @@ func UnrelayedInterqueries(ctx context.Context, src, dst *Chain) ([]interqueryty
 		// Query all interqueries for src chain
 		return retry.Do(func() error {
 			var err error
-			allInterqueries, err = src.ChainProvider.QueryInterqueries(egCtx, uint64(srch))
+			pendingInterqueries, err = src.ChainProvider.QueryInterqueries(egCtx, uint64(srch))
 			return err
 		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
 			src.log.Debug(
@@ -192,66 +188,8 @@ func UnrelayedInterqueries(ctx context.Context, src, dst *Chain) ([]interqueryty
 		}))
 	})
 
-	eg.Go(func() error {
-		// Query all submitted/successful interqueries for src chain
-		return retry.Do(func() error {
-			var err error
-			submittedInterqueries, err = src.ChainProvider.QueryInterqueryResults(egCtx, uint64(srch))
-			return err
-		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
-			src.log.Debug(
-				"Failed to query submitted interqueries",
-				zap.String("chain_id", src.Chainid),
-				zap.Uint("attempt", n+1),
-				zap.Uint("max_attempts", RtyAttNum),
-				zap.Error(err),
-			)
-			srch, _ = src.ChainProvider.QueryLatestHeight(egCtx)
-		}))
-	})
-
-	eg.Go(func() error {
-		// Query all timedout interqueries for src chain
-		return retry.Do(func() error {
-			var err error
-			timedoutInterqueries, err = src.ChainProvider.QueryInterqueryTimeoutResults(egCtx, uint64(srch))
-			return err
-		}, retry.Context(ctx), RtyAtt, RtyDel, RtyErr, retry.OnRetry(func(n uint, err error) {
-			src.log.Debug(
-				"Failed to query interquery timeouts",
-				zap.String("chain_id", src.Chainid),
-				zap.Uint("attempt", n+1),
-				zap.Uint("max_attempts", RtyAttNum),
-				zap.Error(err),
-			)
-			srch, _ = src.ChainProvider.QueryLatestHeight(egCtx)
-		}))
-	})
-
 	if err := eg.Wait(); err != nil {
 		return nil, err
-	}
-
-	// Add to list of complete ids for interquery results
-	for _, queryresult := range submittedInterqueries {
-		if !contains(completeids, queryresult.Storeid) {
-			completeids = append(completeids, queryresult.Storeid)
-		}
-	}
-	// Add to list of timedout ids for interquery timeout results
-	for _, querytimeout := range timedoutInterqueries {
-		if !contains(completeids, querytimeout.Storeid) {
-			completeids = append(completeids, querytimeout.Storeid)
-		}
-	}
-
-	// For all interquery ids in complete ids, store the pending interquery in list to submit later
-	for _, query := range allInterqueries {
-		if !contains(completeids, query.Storeid) {
-			if uint64(srch) > query.TimeoutHeight {
-				pendingInterqueries = append(pendingInterqueries, query)
-			}
-		}
 	}
 
 	return pendingInterqueries, nil
