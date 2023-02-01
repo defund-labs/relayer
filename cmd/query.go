@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
+	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
 	"github.com/defund-labs/relayer/v3/helpers"
 	"github.com/defund-labs/relayer/v3/relayer"
 	"github.com/spf13/cobra"

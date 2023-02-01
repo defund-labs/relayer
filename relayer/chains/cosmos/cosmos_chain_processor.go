@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	clienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
-	conntypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
-	chantypes "github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
+	clienttypes "github.com/cosmos/ibc-go/v4/modules/core/02-client/types"
+	conntypes "github.com/cosmos/ibc-go/v4/modules/core/03-connection/types"
+	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
 	"github.com/defund-labs/relayer/v3/relayer/processor"
 	"github.com/defund-labs/relayer/v3/relayer/provider"
 	"github.com/defund-labs/relayer/v3/relayer/provider/cosmos"

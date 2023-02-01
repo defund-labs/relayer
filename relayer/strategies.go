@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
+	"github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
 	cosmosprocessor "github.com/defund-labs/relayer/v3/relayer/chains/cosmos"
 	"github.com/defund-labs/relayer/v3/relayer/processor"
 	"github.com/defund-labs/relayer/v3/relayer/provider"
@@ -433,7 +433,7 @@ func relayInterqueries(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLe
 	childCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
-	// Fetch any unrelayed sequences depending on the channel order
+	// Fetch any unrelayed interqueries
 	iqs, err := UnrelayedInterqueries(ctx, src, dst)
 	if err != nil {
 		src.log.Warn(
@@ -445,7 +445,7 @@ func relayInterqueries(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLe
 		return false
 	}
 
-	// If there are no unrelayed packets, stop early.
+	// If there are no unrelayed interqueries, stop early.
 	if len(iqs) == 0 {
 		src.log.Info(
 			"No interqueries in queue",
@@ -464,7 +464,7 @@ func relayInterqueries(ctx context.Context, src, dst *Chain, maxTxSize, maxMsgLe
 	}
 
 	if err := RelayInterqueries(childCtx, src, dst, iqs, maxTxSize, maxMsgLength); err != nil {
-		// If there was a context cancellation or deadline while attempting to relay packets,
+		// If there was a context cancellation or deadline while attempting to relay interqueries,
 		// log that and indicate failure.
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			src.log.Warn(

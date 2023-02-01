@@ -8,20 +8,22 @@ import (
 	"strings"
 	"time"
 
+	base64 "encoding/base64"
+
 	"github.com/avast/retry-go/v4"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
-	transfertypes "github.com/cosmos/ibc-go/v3/modules/apps/transfer/types"
-	clienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
-	conntypes "github.com/cosmos/ibc-go/v3/modules/core/03-connection/types"
-	chantypes "github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
-	commitmenttypes "github.com/cosmos/ibc-go/v3/modules/core/23-commitment/types"
-	host "github.com/cosmos/ibc-go/v3/modules/core/24-host"
-	ibcexported "github.com/cosmos/ibc-go/v3/modules/core/exported"
-	tmclient "github.com/cosmos/ibc-go/v3/modules/light-clients/07-tendermint/types"
+	transfertypes "github.com/cosmos/ibc-go/v4/modules/apps/transfer/types"
+	clienttypes "github.com/cosmos/ibc-go/v4/modules/core/02-client/types"
+	conntypes "github.com/cosmos/ibc-go/v4/modules/core/03-connection/types"
+	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
+	commitmenttypes "github.com/cosmos/ibc-go/v4/modules/core/23-commitment/types"
+	host "github.com/cosmos/ibc-go/v4/modules/core/24-host"
+	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
+	tmclient "github.com/cosmos/ibc-go/v4/modules/light-clients/07-tendermint/types"
 	interquerytypes "github.com/defund-labs/defund/x/query/types"
 	"github.com/defund-labs/relayer/v3/relayer/provider"
 	"github.com/tendermint/tendermint/light"
@@ -1563,8 +1565,8 @@ func (cc *CosmosProvider) MsgRelayInterqueryResult(ctx context.Context, src, dst
 		msg := &interquerytypes.MsgCreateInterqueryResult{
 			Creator: acc,
 			Storeid: query.Storeid,
-			Data:    res.Value,
-			Height:  height.RevisionHeight,
+			Data:    base64.StdEncoding.EncodeToString(res.Value),
+			Height:  &height,
 			Proof:   res.ProofOps,
 		}
 
@@ -2030,7 +2032,7 @@ func castClientStateToTMType(cs *codectypes.Any) (*tmclient.ClientState, error) 
 	return clientState, nil
 }
 
-//DefaultUpgradePath is the default IBC upgrade path set for an on-chain light client
+// DefaultUpgradePath is the default IBC upgrade path set for an on-chain light client
 var defaultUpgradePath = []string{"upgrade", "upgradedIBCState"}
 
 func (cc *CosmosProvider) NewClientState(dstUpdateHeader ibcexported.Header, dstTrustingPeriod, dstUbdPeriod time.Duration, allowUpdateAfterExpiry, allowUpdateAfterMisbehaviour bool) (ibcexported.ClientState, error) {

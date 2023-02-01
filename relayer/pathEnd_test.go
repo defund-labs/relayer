@@ -1,7 +1,7 @@
 package relayer
 
 import (
-	chantypes "github.com/cosmos/ibc-go/v3/modules/core/04-channel/types"
+	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
