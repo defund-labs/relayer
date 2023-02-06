@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
+	"github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
 	"github.com/cosmos/relayer/v2/relayer/chains/cosmos"
 	"github.com/cosmos/relayer/v2/relayer/processor"
-	"github.com/cosmos/relayer/v2/relayer/provider"
 	"go.uber.org/zap"
 )
 
@@ -23,8 +22,9 @@ type ActiveChannel struct {
 }
 
 const (
-	ProcessorEvents string = "events"
-	ProcessorLegacy        = "legacy"
+	ProcessorEvents              string = "events"
+	ProcessorLegacy                     = "legacy"
+	DefaultClientUpdateThreshold        = 0 * time.Millisecond
 )
 
 // StartRelayer starts the main relaying loop and returns a channel that will contain any control-flow related errors.
@@ -36,33 +36,42 @@ func StartRelayer(
 	filter ChannelFilter,
 	maxTxSize, maxMsgLength uint64,
 	memo string,
+	clientUpdateThresholdTime time.Duration,
 	processorType string,
 	initialBlockHistory uint64,
+	metrics *processor.PrometheusMetrics,
 ) chan error {
 	errorChan := make(chan error, 1)
 
 	switch processorType {
 	case ProcessorEvents:
-		var filterSrc, filterDst []processor.ChannelKey
+		chainProcessors := make([]processor.ChainProcessor, 0, len(chains))
 
-		for _, ch := range filter.ChannelList {
-			ruleSrc := processor.ChannelKey{ChannelID: ch}
-			ruleDst := processor.ChannelKey{CounterpartyChannelID: ch}
-			filterSrc = append(filterSrc, ruleSrc)
-			filterDst = append(filterDst, ruleDst)
+		for _, chain := range chains {
+			chainProcessors = append(chainProcessors, chain.chainProcessor(log, metrics))
 		}
-		paths := []path{{
-			src: pathChain{
-				provider: src.ChainProvider,
-				pathEnd:  processor.NewPathEnd(src.ChainProvider.ChainId(), src.ClientID(), filter.Rule, filterSrc),
-			},
-			dst: pathChain{
-				provider: dst.ChainProvider,
-				pathEnd:  processor.NewPathEnd(dst.ChainProvider.ChainId(), dst.ClientID(), filter.Rule, filterDst),
-			},
-		}}
 
-		go relayerStartEventProcessor(ctx, log, paths, initialBlockHistory, maxTxSize, maxMsgLength, memo, errorChan)
+		ePaths := make([]path, len(paths))
+		for i, np := range paths {
+			pathName := np.Name
+			p := np.Path
+
+			filter := p.Filter
+			var filterSrc, filterDst []processor.ChainChannelKey
+
+			for _, ch := range filter.ChannelList {
+				ruleSrc := processor.ChainChannelKey{ChainID: p.Src.ChainID, ChannelKey: processor.ChannelKey{ChannelID: ch}}
+				ruleDst := processor.ChainChannelKey{CounterpartyChainID: p.Src.ChainID, ChannelKey: processor.ChannelKey{CounterpartyChannelID: ch}}
+				filterSrc = append(filterSrc, ruleSrc)
+				filterDst = append(filterDst, ruleDst)
+			}
+			ePaths[i] = path{
+				src: processor.NewPathEnd(pathName, p.Src.ChainID, p.Src.ClientID, filter.Rule, filterSrc),
+				dst: processor.NewPathEnd(pathName, p.Dst.ChainID, p.Dst.ClientID, filter.Rule, filterDst),
+			}
+		}
+
+		go relayerStartEventProcessor(ctx, log, chainProcessors, ePaths, initialBlockHistory, maxTxSize, maxMsgLength, memo, clientUpdateThresholdTime, errorChan, metrics)
 		return errorChan
 	case ProcessorLegacy:
 		go relayerMainLoop(ctx, log, src, dst, interquery, filter, maxTxSize, maxMsgLength, memo, errorChan)
@@ -75,23 +84,18 @@ func StartRelayer(
 // TODO: intermediate types. Should combine/replace with the relayer.Chain, relayer.Path, and relayer.PathEnd structs
 // as the stateless and stateful/event-based relaying mechanisms are consolidated.
 type path struct {
-	src pathChain
-	dst pathChain
-}
-
-type pathChain struct {
-	provider provider.ChainProvider
-	pathEnd  processor.PathEnd
+	src processor.PathEnd
+	dst processor.PathEnd
 }
 
 // chainProcessor returns the corresponding ChainProcessor implementation instance for a pathChain.
-func (chain pathChain) chainProcessor(log *zap.Logger) processor.ChainProcessor {
+func (chain *Chain) chainProcessor(log *zap.Logger, metrics *processor.PrometheusMetrics) processor.ChainProcessor {
 	// Handle new ChainProcessor implementations as cases here
-	switch p := chain.provider.(type) {
+	switch p := chain.ChainProvider.(type) {
 	case *cosmos.CosmosProvider:
-		return cosmos.NewCosmosChainProcessor(log, p)
+		return cosmos.NewCosmosChainProcessor(log, p, metrics)
 	default:
-		panic(fmt.Errorf("unsupported chain provider type: %T", chain.provider))
+		panic(fmt.Errorf("unsupported chain provider type: %T", chain.ChainProvider))
 	}
 }
 
@@ -99,28 +103,29 @@ func (chain pathChain) chainProcessor(log *zap.Logger) processor.ChainProcessor 
 func relayerStartEventProcessor(
 	ctx context.Context,
 	log *zap.Logger,
+	chainProcessors []processor.ChainProcessor,
 	paths []path,
 	initialBlockHistory uint64,
 	maxTxSize,
 	maxMsgLength uint64,
 	memo string,
+	clientUpdateThresholdTime time.Duration,
 	errCh chan<- error,
+	metrics *processor.PrometheusMetrics,
 ) {
 	defer close(errCh)
 
-	epb := processor.NewEventProcessor()
+	epb := processor.NewEventProcessor().WithChainProcessors(chainProcessors...)
 
 	for _, p := range paths {
 		epb = epb.
-			WithChainProcessors(
-				p.src.chainProcessor(log),
-				p.dst.chainProcessor(log),
-			).
 			WithPathProcessors(processor.NewPathProcessor(
 				log,
-				p.src.pathEnd,
-				p.dst.pathEnd,
+				p.src,
+				p.dst,
+				metrics,
 				memo,
+				clientUpdateThresholdTime,
 			))
 	}
 
@@ -284,7 +289,7 @@ func filterOpenChannels(channels []*types.IdentifiedChannel) map[string]*ActiveC
 // channels to relay on.
 func applyChannelFilterRule(filter ChannelFilter, channels []*types.IdentifiedChannel) []*types.IdentifiedChannel {
 	switch filter.Rule {
-	case allowList:
+	case processor.RuleAllowList:
 		var filteredChans []*types.IdentifiedChannel
 		for _, c := range channels {
 			if filter.InChannelList(c.ChannelId) {
@@ -292,7 +297,7 @@ func applyChannelFilterRule(filter ChannelFilter, channels []*types.IdentifiedCh
 			}
 		}
 		return filteredChans
-	case denyList:
+	case processor.RuleDenyList:
 		var filteredChans []*types.IdentifiedChannel
 		for _, c := range channels {
 			if filter.InChannelList(c.ChannelId) {

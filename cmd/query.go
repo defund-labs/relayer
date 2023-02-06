@@ -3,13 +3,10 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
-	"strings"
-
-	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
-	"github.com/cosmos/relayer/v2/helpers"
 	"github.com/cosmos/relayer/v2/relayer"
 	"github.com/spf13/cobra"
+	"strconv"
+	"strings"
 )
 
 // queryCmd represents the chain command
@@ -25,16 +22,15 @@ func queryCmd(a *appState) *cobra.Command {
 		queryUnrelayedPackets(a),
 		queryUnrelayedAcknowledgements(a),
 		lineBreakCommand(),
-		//queryAccountCmd(),
 		queryBalanceCmd(a),
 		queryHeaderCmd(a),
 		queryNodeStateCmd(a),
-		//queryValSetAtHeightCmd(),
 		queryTxs(a),
 		queryTx(a),
 		lineBreakCommand(),
 		queryClientCmd(a),
 		queryClientsCmd(a),
+		queryClientsExpiration(a),
 		queryConnection(a),
 		queryConnections(a),
 		queryConnectionsUsingClient(a),
@@ -199,59 +195,6 @@ $ %s q txs ibc-0 "message.action=transfer"`,
 	return paginationFlags(a.Viper, cmd, "txs")
 }
 
-//func queryAccountCmd() *cobra.Command {
-//	cmd := &cobra.Command{
-//		Use:     "account [chain-id]",
-//		Aliases: []string{"acc"},
-//		Short:   "query the relayer's account on a given network by chain ID",
-//		Args:    cobra.ExactArgs(1),
-//		Example: strings.TrimSpace(fmt.Sprintf(`
-//$ %s query account ibc-0
-//$ %s q acc ibc-1`,
-//			appName, appName,
-//		)),
-//		RunE: func(cmd *cobra.Command, args []string) error {
-//			chain, err := config.Chains.Get(args[0])
-//			if err != nil {
-//				return err
-//			}
-//
-//			addr := chain.ChainProvider.Address()
-//			if addr == "" || len(addr) == 0 {
-//				return fmt.Errorf("failed to retrieve address or address is invalid on chain %s \n", chain.ChainID())
-//			}
-//
-//			// TODO circle back to this after clearing up errors
-//			//{
-//			//	"account":
-//			//		{
-//			//		"@type":"/cosmos.auth.v1beta1.BaseAccount",
-//			//		"address":"cosmos1kn4tkqezr3c7zc43lsu5r4p2l2qqf4mp3hnjax",
-//			//		"pub_key":{"@type":"/cosmos.crypto.secp256k1.PubKey",
-//			//			"key":"A/YSSeVUdSJjogfcuhaR0rCUCMREOEdFTZR2cTTC7TPC"
-//			//		},
-//			//		"account_number":"380320",
-//			//		"sequence":"2336"
-//			//	}
-//			//}
-//
-//			res, err := types.NewQueryClient(chain.CLIContext(0)).Account(
-//				context.Background(),
-//				&types.QueryAccountRequest{
-//					Address: addr,
-//				},
-//			)
-//			if err != nil {
-//				return err
-//			}
-//
-//			return chain.Print(res, false, false)
-//		},
-//	}
-//
-//	return cmd
-//}
-
 func queryBalanceCmd(a *appState) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "balance chain_name [key_name]",
@@ -288,7 +231,7 @@ $ %s query balance ibc-0 testkey`,
 				return err
 			}
 
-			coins, err := helpers.QueryBalance(cmd.Context(), chain, addr, showDenoms)
+			coins, err := relayer.QueryBalance(cmd.Context(), chain, addr, showDenoms)
 			if err != nil {
 				return err
 			}
@@ -317,23 +260,29 @@ $ %s query header ibc-0 1400`,
 				return errChainNotFound(args[0])
 			}
 
-			var header ibcexported.Header
-			var err error
+			var height int64
 			switch len(args) {
 			case 1:
-				header, err = chain.ChainProvider.GetLightSignedHeaderAtHeight(cmd.Context(), 0)
+				var err error
+				height, err = chain.ChainProvider.QueryLatestHeight(cmd.Context())
 				if err != nil {
 					return err
 				}
 
 			case 2:
-				header, err = helpers.QueryHeader(cmd.Context(), chain, args[1])
+				var err error
+				height, err = strconv.ParseInt(args[1], 10, 64)
 				if err != nil {
 					return err
 				}
 			}
 
-			s, err := chain.ChainProvider.Sprint(header)
+			header, err := chain.ChainProvider.QueryIBCHeader(cmd.Context(), height)
+			if err != nil {
+				return err
+			}
+
+			s, err := json.Marshal(header)
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to marshal header: %v\n", err)
 				return err
@@ -484,41 +433,6 @@ $ %s query clients ibc-2 --offset 2 --limit 30`,
 
 	return paginationFlags(a.Viper, cmd, "client states")
 }
-
-//func queryValSetAtHeightCmd() *cobra.Command {
-//	cmd := &cobra.Command{
-//		Use:   "valset [chain-id]",
-//		Short: "query the validator set at particular height for a network by chain ID",
-//		Args:  cobra.ExactArgs(1),
-//		Example: strings.TrimSpace(fmt.Sprintf(`
-//$ %s query valset ibc-0
-//$ %s q valset ibc-1`,
-//			appName, appName,
-//		)),
-//		RunE: func(cmd *cobra.Command, args []string) error {
-//			chain, err := config.Chains.Get(args[0])
-//			if err != nil {
-//				return err
-//			}
-//
-//			h, err := chain.ChainProvider.QueryLatestHeight()
-//			if err != nil {
-//				return err
-//			}
-//
-//			version := clienttypes.ParseChainID(args[0])
-//
-//			res, err := chain.QueryValsetAtHeight(clienttypes.NewHeight(version, uint64(h)))
-//			if err != nil {
-//				return err
-//			}
-//
-//			return chain.Print(res, false, false)
-//		},
-//	}
-//
-//	return cmd
-//}
 
 func queryConnections(a *appState) *cobra.Command {
 	cmd := &cobra.Command{
@@ -950,6 +864,52 @@ $ %s query unrelayed-acks demo-path channel-0`,
 			}
 
 			fmt.Fprintln(cmd.OutOrStdout(), string(out))
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func queryClientsExpiration(a *appState) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "clients-expiration path",
+		Short: "query for light clients expiration date",
+		Args:  withUsage(cobra.ExactArgs(1)),
+		Example: strings.TrimSpace(fmt.Sprintf(`
+$ %s query clients-expiration demo-path`,
+			appName,
+		)),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := a.Config.Paths.Get(args[0])
+			if err != nil {
+				return err
+			}
+			src, dst := path.Src.ChainID, path.Dst.ChainID
+			c, err := a.Config.Chains.Gets(src, dst)
+			if err != nil {
+				return err
+			}
+
+			if err = c[src].SetPath(path.Src); err != nil {
+				return err
+			}
+			if err = c[dst].SetPath(path.Dst); err != nil {
+				return err
+			}
+
+			srcExpiration, err := relayer.QueryClientExpiration(cmd.Context(), c[src], c[dst])
+			if err != nil {
+				return err
+			}
+			dstExpiration, err := relayer.QueryClientExpiration(cmd.Context(), c[dst], c[src])
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), relayer.SPrintClientExpiration(c[src], srcExpiration))
+			fmt.Fprintf(cmd.OutOrStdout(), relayer.SPrintClientExpiration(c[dst], dstExpiration))
+
 			return nil
 		},
 	}

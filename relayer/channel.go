@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
-	host "github.com/cosmos/ibc-go/v4/modules/core/24-host"
+	chantypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
+	host "github.com/cosmos/ibc-go/v7/modules/core/24-host"
 	"github.com/cosmos/relayer/v2/relayer/processor"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"go.uber.org/zap"
@@ -21,6 +21,7 @@ func (c *Chain) CreateOpenChannels(
 	srcPortID, dstPortID, order, version string,
 	override bool,
 	memo string,
+	pathName string,
 ) error {
 	// client and connection identifiers must be filled in
 	if err := ValidateConnectionPaths(c, dst); err != nil {
@@ -44,15 +45,6 @@ func (c *Chain) CreateOpenChannels(
 		}
 	}
 
-	srcPathChain := pathChain{
-		provider: c.ChainProvider,
-		pathEnd:  processor.NewPathEnd(c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChannelKey{}),
-	}
-	dstPathChain := pathChain{
-		provider: dst.ChainProvider,
-		pathEnd:  processor.NewPathEnd(dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChannelKey{}),
-	}
-
 	// Timeout is per message. Four channel handshake messages, allowing maxRetries for each.
 	processorTimeout := timeout * 4 * time.Duration(maxRetries)
 
@@ -61,9 +53,11 @@ func (c *Chain) CreateOpenChannels(
 
 	pp := processor.NewPathProcessor(
 		c.log,
-		srcPathChain.pathEnd,
-		dstPathChain.pathEnd,
+		processor.NewPathEnd(pathName, c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
+		processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
+		nil,
 		memo,
+		DefaultClientUpdateThreshold,
 	)
 
 	c.log.Info("Starting event processor for channel handshake",
@@ -75,8 +69,8 @@ func (c *Chain) CreateOpenChannels(
 
 	return processor.NewEventProcessor().
 		WithChainProcessors(
-			srcPathChain.chainProcessor(c.log),
-			dstPathChain.chainProcessor(c.log),
+			c.chainProcessor(c.log, nil),
+			dst.chainProcessor(c.log, nil),
 		).
 		WithPathProcessors(pp).
 		WithInitialBlockHistory(0).
@@ -114,16 +108,8 @@ func (c *Chain) CloseChannel(
 	srcChanID,
 	srcPortID string,
 	memo string,
+	pathName string,
 ) error {
-	srcPathChain := pathChain{
-		provider: c.ChainProvider,
-		pathEnd:  processor.NewPathEnd(c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChannelKey{}),
-	}
-	dstPathChain := pathChain{
-		provider: dst.ChainProvider,
-		pathEnd:  processor.NewPathEnd(dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChannelKey{}),
-	}
-
 	// Timeout is per message. Two close channel handshake messages, allowing maxRetries for each.
 	processorTimeout := timeout * 2 * time.Duration(maxRetries)
 
@@ -132,14 +118,16 @@ func (c *Chain) CloseChannel(
 
 	return processor.NewEventProcessor().
 		WithChainProcessors(
-			srcPathChain.chainProcessor(c.log),
-			dstPathChain.chainProcessor(c.log),
+			c.chainProcessor(c.log, nil),
+			dst.chainProcessor(c.log, nil),
 		).
 		WithPathProcessors(processor.NewPathProcessor(
 			c.log,
-			srcPathChain.pathEnd,
-			dstPathChain.pathEnd,
+			processor.NewPathEnd(pathName, c.PathEnd.ChainID, c.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
+			processor.NewPathEnd(pathName, dst.PathEnd.ChainID, dst.PathEnd.ClientID, "", []processor.ChainChannelKey{}),
+			nil,
 			memo,
+			DefaultClientUpdateThreshold,
 		)).
 		WithInitialBlockHistory(0).
 		WithMessageLifecycle(&processor.ChannelMessageLifecycle{

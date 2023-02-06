@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -29,41 +28,41 @@ import (
 	"github.com/avast/retry-go/v4"
 	"github.com/cosmos/relayer/v2/internal/relaydebug"
 	"github.com/cosmos/relayer/v2/relayer"
+	"github.com/cosmos/relayer/v2/relayer/chains/cosmos"
+	"github.com/cosmos/relayer/v2/relayer/processor"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
 // startCmd represents the start command
-// NOTE: This is basically pseudocode
 func startCmd(a *appState) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "start path_name",
 		Aliases: []string{"st"},
 		Short:   "Start the listening relayer on a given path",
-		Args:    withUsage(cobra.ExactArgs(1)),
+		Args:    withUsage(cobra.MinimumNArgs(0)),
 		Example: strings.TrimSpace(fmt.Sprintf(`
-$ %s start demo-path -p events # to use event processor
+$ %s start           # start all configured paths
+$ %s start demo-path # start the 'demo-path' path
 $ %s start demo-path --max-msgs 3
-$ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
+$ %s start demo-path2 --max-tx-size 10`, appName, appName, appName, appName)),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, src, dst, interquery, err := a.Config.ChainsFromPath(args[0])
 			if err != nil {
 				return err
 			}
 
-			if err = ensureKeysExist(c); err != nil {
+			if err := ensureKeysExist(chains); err != nil {
 				return err
 			}
-
-			path := a.Config.Paths.MustGet(args[0])
 
 			maxTxSize, maxMsgLength, err := GetStartOptions(cmd)
 			if err != nil {
 				return err
 			}
 
-			filter := path.Filter
+			var prometheusMetrics *processor.PrometheusMetrics
 
 			debugAddr, err := cmd.Flags().GetString(flagDebugAddr)
 			if err != nil {
@@ -79,7 +78,13 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 				}
 				log := a.Log.With(zap.String("sys", "debughttp"))
 				log.Info("Debug server listening", zap.String("addr", debugAddr))
-				relaydebug.StartDebugServer(cmd.Context(), log, ln)
+				prometheusMetrics = processor.NewPrometheusMetrics()
+				relaydebug.StartDebugServer(cmd.Context(), log, ln, prometheusMetrics.Registry)
+				for _, chain := range chains {
+					if ccp, ok := chain.ChainProvider.(*cosmos.CosmosProvider); ok {
+						ccp.SetMetrics(prometheusMetrics)
+					}
+				}
 			}
 
 			processorType, err := cmd.Flags().GetString(flagProcessor)
@@ -134,6 +139,18 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 				}
 			}
 
+			rlyErrCh := relayer.StartRelayer(
+				cmd.Context(),
+				a.Log,
+				chains,
+				paths,
+				maxTxSize, maxMsgLength,
+				a.Config.memo(cmd),
+				clientUpdateThresholdTime,
+				processorType, initialBlockHistory,
+				prometheusMetrics,
+			)
+
 			// Block until the error channel sends a message.
 			// The context being canceled will cause the relayer to stop,
 			// so we don't want to separately monitor the ctx.Done channel,
@@ -155,43 +172,6 @@ $ %s start demo-path2 --max-tx-size 10`, appName, appName, appName)),
 	cmd = initBlockFlag(a.Viper, cmd)
 	cmd = memoFlag(a.Viper, cmd)
 	return cmd
-}
-
-// UpdateClientsFromChains takes src, dst chains, threshold time and update clients based on expiry time
-func UpdateClientsFromChains(ctx context.Context, src, dst *relayer.Chain, thresholdTime time.Duration) (time.Duration, error) {
-	var (
-		srcTimeExpiry, dstTimeExpiry time.Duration
-		err                          error
-	)
-
-	eg, egCtx := errgroup.WithContext(ctx)
-	eg.Go(func() error {
-		var err error
-		srcTimeExpiry, err = src.ChainProvider.AutoUpdateClient(egCtx, dst.ChainProvider, thresholdTime, src.ClientID(), dst.ClientID())
-		return err
-	})
-	eg.Go(func() error {
-		var err error
-		dstTimeExpiry, err = dst.ChainProvider.AutoUpdateClient(egCtx, src.ChainProvider, thresholdTime, dst.ClientID(), src.ClientID())
-		return err
-	})
-	if err = eg.Wait(); err != nil {
-		return 0, err
-	}
-
-	if srcTimeExpiry <= 0 {
-		return 0, fmt.Errorf("client (%s) of chain: %s is expired",
-			src.PathEnd.ClientID, src.ChainID())
-	}
-
-	if dstTimeExpiry <= 0 {
-		return 0, fmt.Errorf("client (%s) of chain: %s is expired",
-			dst.PathEnd.ClientID, dst.ChainID())
-	}
-
-	minTimeExpiry := math.Min(float64(srcTimeExpiry), float64(dstTimeExpiry))
-
-	return time.Duration(int64(minTimeExpiry)), nil
 }
 
 // GetStartOptions sets strategy specific fields.

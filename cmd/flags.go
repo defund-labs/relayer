@@ -45,12 +45,22 @@ const (
 	flagProcessor               = "processor"
 	flagInitialBlockHistory     = "block-history"
 	flagMemo                    = "memo"
+	flagFilterRule              = "filter-rule"
+	flagFilterChannels          = "filter-channels"
+	flagSrcChainID              = "src-chain-id"
+	flagDstChainID              = "dst-chain-id"
+	flagSrcClientID             = "src-client-id"
+	flagDstClientID             = "dst-client-id"
+	flagSrcConnID               = "src-connection-id"
+	flagDstConnID               = "dst-connection-id"
 )
 
 const (
 	// 7597 is "RLYR" on a telephone keypad.
 	// It also happens to be unassigned in the IANA port list.
 	defaultDebugAddr = "localhost:7597"
+
+	blankValue = "blank"
 )
 
 func ibcDenomFlags(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
@@ -152,6 +162,43 @@ func fileFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 	return cmd
 }
 
+func pathFilterFlags(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
+	flags := cmd.Flags()
+	flags.String(flagFilterRule, blankValue, `filter rule ("allowlist", "denylist", or "" for no filtering)`)
+	if err := v.BindPFlag(flagFilterRule, flags.Lookup(flagFilterRule)); err != nil {
+		panic(err)
+	}
+	flags.String(flagFilterChannels, blankValue, "channels from source chain perspective to filter")
+	if err := v.BindPFlag(flagFilterRule, flags.Lookup(flagFilterRule)); err != nil {
+		panic(err)
+	}
+	flags.String(flagSrcChainID, "", "chain ID for source chain")
+	if err := v.BindPFlag(flagSrcChainID, flags.Lookup(flagSrcChainID)); err != nil {
+		panic(err)
+	}
+	flags.String(flagDstChainID, "", "chain ID for destination chain")
+	if err := v.BindPFlag(flagDstChainID, flags.Lookup(flagDstChainID)); err != nil {
+		panic(err)
+	}
+	flags.String(flagSrcClientID, "", "client ID for source chain")
+	if err := v.BindPFlag(flagSrcClientID, flags.Lookup(flagSrcClientID)); err != nil {
+		panic(err)
+	}
+	flags.String(flagDstClientID, "", "client ID for destination chain")
+	if err := v.BindPFlag(flagDstClientID, flags.Lookup(flagDstClientID)); err != nil {
+		panic(err)
+	}
+	flags.String(flagSrcConnID, "", "connection ID for source chain")
+	if err := v.BindPFlag(flagSrcConnID, flags.Lookup(flagSrcConnID)); err != nil {
+		panic(err)
+	}
+	flags.String(flagDstConnID, "", "connection ID for destination chain")
+	if err := v.BindPFlag(flagDstConnID, flags.Lookup(flagDstConnID)); err != nil {
+		panic(err)
+	}
+	return cmd
+}
+
 func timeoutFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 	cmd.Flags().StringP(flagTimeout, "t", "10s", "timeout between relayer runs")
 	if err := v.BindPFlag(flagTimeout, cmd.Flags().Lookup(flagTimeout)); err != nil {
@@ -215,7 +262,7 @@ func retryFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 }
 
 func updateTimeFlags(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().Duration(flagThresholdTime, 6*time.Hour, "time before to expiry time to update client")
+	cmd.Flags().Duration(flagThresholdTime, relayer.DefaultClientUpdateThreshold, "time after previous client update before automatic client update")
 	if err := v.BindPFlag(flagThresholdTime, cmd.Flags().Lookup(flagThresholdTime)); err != nil {
 		panic(err)
 	}
@@ -293,7 +340,7 @@ func debugServerFlags(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
 }
 
 func processorFlag(v *viper.Viper, cmd *cobra.Command) *cobra.Command {
-	cmd.Flags().StringP(flagProcessor, "p", relayer.ProcessorLegacy, "which relayer processor to use")
+	cmd.Flags().StringP(flagProcessor, "p", relayer.ProcessorEvents, "which relayer processor to use")
 	if err := v.BindPFlag(flagProcessor, cmd.Flags().Lookup(flagProcessor)); err != nil {
 		panic(err)
 	}

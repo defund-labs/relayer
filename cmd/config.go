@@ -153,7 +153,7 @@ $ %s cfg i`, appName, defaultHome, appName)),
 				memo, _ := cmd.Flags().GetString(flagMemo)
 
 				// And write the default config to that location...
-				if _, err = f.Write(defaultConfig(memo)); err != nil {
+				if _, err = f.Write(defaultConfigYAML(memo)); err != nil {
 					return err
 				}
 
@@ -165,7 +165,8 @@ $ %s cfg i`, appName, defaultHome, appName)),
 			return fmt.Errorf("config already exists: %s", cfgPath)
 		},
 	}
-	return memoFlag(a.Viper, cmd)
+	cmd = memoFlag(a.Viper, cmd)
+	return cmd
 }
 
 // addChainsFromDirectory finds all JSON-encoded config files in dir,
@@ -431,12 +432,16 @@ func (c Config) MustYAML() []byte {
 	return out
 }
 
-func defaultConfig(memo string) []byte {
-	return Config{
+func defaultConfigYAML(memo string) []byte {
+	return DefaultConfig(memo).MustYAML()
+}
+
+func DefaultConfig(memo string) *Config {
+	return &Config{
 		Global: newDefaultGlobalConfig(memo),
-		Chains: relayer.Chains{},
-		Paths:  relayer.Paths{},
-	}.MustYAML()
+		Chains: make(relayer.Chains),
+		Paths:  make(relayer.Paths),
+	}
 }
 
 // GlobalConfig describes any global relayer settings
@@ -535,67 +540,78 @@ func validateConfig(c *Config) error {
 	return nil
 }
 
-// initConfig reads in config file and ENV variables if set.
+// initConfig reads config file into a.Config if file is present.
 func initConfig(cmd *cobra.Command, a *appState) error {
-	home, err := cmd.PersistentFlags().GetString(flagHome)
+	if a.HomePath == "" {
+		var err error
+		a.HomePath, err = cmd.PersistentFlags().GetString(flagHome)
+		if err != nil {
+			return err
+		}
+	}
+
+	cfgPath := path.Join(a.HomePath, "config", "config.yaml")
+	if _, err := os.Stat(cfgPath); err != nil {
+		// don't return error if file doesn't exist
+		return nil
+	}
+	a.Viper.SetConfigFile(cfgPath)
+	if err := a.Viper.ReadInConfig(); err != nil {
+		return err
+	}
+	// read the config file bytes
+	file, err := os.ReadFile(a.Viper.ConfigFileUsed())
 	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error reading file:", err)
 		return err
 	}
 
-	cfgPath := path.Join(home, "config", "config.yaml")
-	if _, err := os.Stat(cfgPath); err == nil {
-		a.Viper.SetConfigFile(cfgPath)
-		if err := a.Viper.ReadInConfig(); err == nil {
-			// read the config file bytes
-			file, err := os.ReadFile(a.Viper.ConfigFileUsed())
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Error reading file:", err)
-				return err
-			}
+	// unmarshall them into the wrapper struct
+	cfgWrapper := &ConfigInputWrapper{}
+	err = yaml.Unmarshal(file, cfgWrapper)
+	if err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error unmarshalling config:", err)
+		return err
+	}
 
-			// unmarshall them into the wrapper struct
-			cfgWrapper := &ConfigInputWrapper{}
-			err = yaml.Unmarshal(file, cfgWrapper)
-			if err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Error unmarshalling config:", err)
-				return err
-			}
-
-			// verify that the channel filter rule is valid for every path in the config
-			for _, p := range cfgWrapper.Paths {
-				if err := p.ValidateChannelFilterRule(); err != nil {
-					return fmt.Errorf("error initializing the relayer config for path %s: %w", p.String(), err)
-				}
-			}
-
-			// build the config struct
-			chains := make(relayer.Chains)
-			for chainName, pcfg := range cfgWrapper.ProviderConfigs {
-				prov, err := pcfg.Value.(provider.ProviderConfig).NewProvider(
-					a.Log.With(zap.String("provider_type", pcfg.Type)),
-					a.HomePath, a.Debug, chainName,
-				)
-				if err != nil {
-					return fmt.Errorf("failed to build ChainProviders: %w", err)
-				}
-
-				chain := relayer.NewChain(a.Log, prov, a.Debug)
-				chains[chainName] = chain
-			}
-
-			a.Config = &Config{
-				Global: cfgWrapper.Global,
-				Chains: chains,
-				Paths:  cfgWrapper.Paths,
-			}
-
-			// ensure config has []*relayer.Chain used for all chain operations
-			if err := validateConfig(a.Config); err != nil {
-				fmt.Fprintln(cmd.ErrOrStderr(), "Error parsing chain config:", err)
-				return err
-			}
+	// verify that the channel filter rule is valid for every path in the config
+	for _, p := range cfgWrapper.Paths {
+		if err := p.ValidateChannelFilterRule(); err != nil {
+			return fmt.Errorf("error initializing the relayer config for path %s: %w", p.String(), err)
 		}
 	}
+
+	// build the config struct
+	chains := make(relayer.Chains)
+	for chainName, pcfg := range cfgWrapper.ProviderConfigs {
+		prov, err := pcfg.Value.(provider.ProviderConfig).NewProvider(
+			a.Log.With(zap.String("provider_type", pcfg.Type)),
+			a.HomePath, a.Debug, chainName,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to build ChainProviders: %w", err)
+		}
+
+		if err := prov.Init(cmd.Context()); err != nil {
+			return fmt.Errorf("failed to initialize provider: %w", err)
+		}
+
+		chain := relayer.NewChain(a.Log, prov, a.Debug)
+		chains[chainName] = chain
+	}
+
+	a.Config = &Config{
+		Global: cfgWrapper.Global,
+		Chains: chains,
+		Paths:  cfgWrapper.Paths,
+	}
+
+	// ensure config has []*relayer.Chain used for all chain operations
+	if err := validateConfig(a.Config); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Error parsing chain config:", err)
+		return err
+	}
+
 	return nil
 }
 

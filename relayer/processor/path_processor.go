@@ -17,12 +17,15 @@ const (
 	// Amount of time to wait when sending transactions before giving up
 	// and continuing on. Messages will be retried later if they are still
 	// relevant.
-	messageSendTimeout = 10 * time.Second
+	messageSendTimeout = 60 * time.Second
 
 	// Amount of time to wait for a proof to be queried before giving up.
 	// The proof query will be retried later if the message still needs
 	// to be relayed.
 	packetProofQueryTimeout = 5 * time.Second
+
+	// Amount of time to wait for interchain queries.
+	interchainQueryTimeout = 60 * time.Second
 
 	// If message assembly fails from either proof query failure on the source
 	// or assembling the message for the destination, how many blocks should pass
@@ -31,7 +34,7 @@ const (
 
 	// If the message was assembled successfully, but sending the message failed,
 	// how many blocks should pass before retrying.
-	blocksToRetrySendAfter = 2
+	blocksToRetrySendAfter = 5
 
 	// How many times to retry sending a message before giving up on it.
 	maxMessageSendRetries = 5
@@ -55,10 +58,14 @@ type PathProcessor struct {
 
 	memo string
 
+	clientUpdateThresholdTime time.Duration
+
 	// Signals to retry.
 	retryProcess chan struct{}
 
 	sentInitialMsg bool
+
+	metrics *PrometheusMetrics
 }
 
 // PathProcessors is a slice of PathProcessor instances
@@ -73,13 +80,22 @@ func (p PathProcessors) IsRelayedChannel(k ChannelKey, chainID string) bool {
 	return false
 }
 
-func NewPathProcessor(log *zap.Logger, pathEnd1 PathEnd, pathEnd2 PathEnd, memo string) *PathProcessor {
+func NewPathProcessor(
+	log *zap.Logger,
+	pathEnd1 PathEnd,
+	pathEnd2 PathEnd,
+	metrics *PrometheusMetrics,
+	memo string,
+	clientUpdateThresholdTime time.Duration,
+) *PathProcessor {
 	return &PathProcessor{
-		log:          log,
-		pathEnd1:     newPathEndRuntime(log, pathEnd1),
-		pathEnd2:     newPathEndRuntime(log, pathEnd2),
-		retryProcess: make(chan struct{}, 2),
-		memo:         memo,
+		log:                       log,
+		pathEnd1:                  newPathEndRuntime(log, pathEnd1, metrics),
+		pathEnd2:                  newPathEndRuntime(log, pathEnd2, metrics),
+		retryProcess:              make(chan struct{}, 2),
+		memo:                      memo,
+		clientUpdateThresholdTime: clientUpdateThresholdTime,
+		metrics:                   metrics,
 	}
 }
 
@@ -129,10 +145,7 @@ func (pp *PathProcessor) channelPairs() []channelPair {
 	}
 	pairs := make([]channelPair, len(channels))
 	i := 0
-	for k, open := range channels {
-		if !open {
-			continue
-		}
+	for k, _ := range channels {
 		pairs[i] = channelPair{
 			pathEnd1ChannelKey: k,
 			pathEnd2ChannelKey: k.Counterparty(),
@@ -160,9 +173,9 @@ func (pp *PathProcessor) SetChainProviderIfApplicable(chainProvider provider.Cha
 
 func (pp *PathProcessor) IsRelayedChannel(chainID string, channelKey ChannelKey) bool {
 	if pp.pathEnd1.info.ChainID == chainID {
-		return pp.pathEnd1.info.ShouldRelayChannel(channelKey)
+		return pp.pathEnd1.info.ShouldRelayChannel(ChainChannelKey{ChainID: chainID, CounterpartyChainID: pp.pathEnd2.info.ChainID, ChannelKey: channelKey})
 	} else if pp.pathEnd2.info.ChainID == chainID {
-		return pp.pathEnd2.info.ShouldRelayChannel(channelKey)
+		return pp.pathEnd2.info.ShouldRelayChannel(ChainChannelKey{ChainID: chainID, CounterpartyChainID: pp.pathEnd1.info.ChainID, ChannelKey: channelKey})
 	}
 	return false
 }
@@ -231,11 +244,11 @@ func (pp *PathProcessor) processAvailableSignals(ctx context.Context, cancel fun
 		return true
 	case d := <-pp.pathEnd1.incomingCacheData:
 		// we have new data from ChainProcessor for pathEnd1
-		pp.pathEnd1.mergeCacheData(ctx, cancel, d, messageLifecycle)
+		pp.pathEnd1.mergeCacheData(ctx, cancel, d, pp.pathEnd2.info.ChainID, pp.pathEnd2.inSync, messageLifecycle, pp.pathEnd2)
 
 	case d := <-pp.pathEnd2.incomingCacheData:
 		// we have new data from ChainProcessor for pathEnd2
-		pp.pathEnd2.mergeCacheData(ctx, cancel, d, messageLifecycle)
+		pp.pathEnd2.mergeCacheData(ctx, cancel, d, pp.pathEnd1.info.ChainID, pp.pathEnd1.inSync, messageLifecycle, pp.pathEnd1)
 
 	case <-pp.retryProcess:
 		// No new data to merge in, just retry handling.

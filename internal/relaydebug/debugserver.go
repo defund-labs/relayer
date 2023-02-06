@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/pprof"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 )
 
@@ -13,7 +15,7 @@ import (
 // accepting connections on the given listener.
 // Any HTTP logging will be written at info level to the given logger.
 // The server will be forcefully shut down when ctx finishes.
-func StartDebugServer(ctx context.Context, log *zap.Logger, ln net.Listener) {
+func StartDebugServer(ctx context.Context, log *zap.Logger, ln net.Listener, registry *prometheus.Registry) {
 	// Although we could just import net/http/pprof and rely on the default global server,
 	// we may want many instances of this in test,
 	// and we will probably want more endpoints as time goes on,
@@ -30,6 +32,12 @@ func StartDebugServer(ctx context.Context, log *zap.Logger, ln net.Listener) {
 	// And redirect the browser to the /debug/pprof root,
 	// so operators don't see a mysterious 404 page.
 	mux.Handle("/", http.RedirectHandler("/debug/pprof", http.StatusSeeOther))
+
+	// Serve default prometheus metrics
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// Serve relayer metrics
+	mux.Handle("/relayer/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	srv := &http.Server{
 		Handler:  mux,

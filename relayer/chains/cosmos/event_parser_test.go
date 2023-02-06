@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	clienttypes "github.com/cosmos/ibc-go/v4/modules/core/02-client/types"
-	conntypes "github.com/cosmos/ibc-go/v4/modules/core/03-connection/types"
-	chantypes "github.com/cosmos/ibc-go/v4/modules/core/04-channel/types"
+	clienttypes "github.com/cosmos/ibc-go/v7/modules/core/02-client/types"
+	conntypes "github.com/cosmos/ibc-go/v7/modules/core/03-connection/types"
+	chantypes "github.com/cosmos/ibc-go/v7/modules/core/04-channel/types"
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/require"
+	abci "github.com/tendermint/tendermint/abci/types"
 	"go.uber.org/zap"
 )
 
@@ -216,81 +217,92 @@ func TestParseEventLogs(t *testing.T) {
 		testPacketDstChannel       = "channel-1"
 		testPacketDstPort          = "port-1"
 	)
-	abciLogs := sdk.ABCIMessageLogs{
+	events := []abci.Event{
+
 		{
-			MsgIndex: 0,
-			Events: sdk.StringEvents{
+			Type: clienttypes.EventTypeUpdateClient,
+			Attributes: []abci.EventAttribute{
 				{
-					Type: clienttypes.EventTypeUpdateClient,
-					Attributes: []sdk.Attribute{
-						{
-							Key:   clienttypes.AttributeKeyClientID,
-							Value: testClientID1,
-						},
-						{
-							Key:   clienttypes.AttributeKeyConsensusHeight,
-							Value: testClientConsensusHeight,
-						},
-					},
+					Key:   clienttypes.AttributeKeyClientID,
+					Value: testClientID1,
+				},
+				{
+					Key:   clienttypes.AttributeKeyConsensusHeight,
+					Value: testClientConsensusHeight,
 				},
 			},
 		},
 		{
-			MsgIndex: 1,
-			Events: sdk.StringEvents{
+			Type: chantypes.EventTypeRecvPacket,
+			Attributes: []abci.EventAttribute{
 				{
-					Type: chantypes.EventTypeRecvPacket,
-					Attributes: []sdk.Attribute{
-						{
-							Key:   chantypes.AttributeKeySequence,
-							Value: testPacketSequence,
-						},
-						{
-							Key:   chantypes.AttributeKeyDataHex,
-							Value: testPacketDataHex,
-						},
-						{
-							Key:   chantypes.AttributeKeyTimeoutHeight,
-							Value: testPacketTimeoutHeight,
-						},
-						{
-							Key:   chantypes.AttributeKeyTimeoutTimestamp,
-							Value: testPacketTimeoutTimestamp,
-						},
-						{
-							Key:   chantypes.AttributeKeySrcChannel,
-							Value: testPacketSrcChannel,
-						},
-						{
-							Key:   chantypes.AttributeKeySrcPort,
-							Value: testPacketSrcPort,
-						},
-						{
-							Key:   chantypes.AttributeKeyDstChannel,
-							Value: testPacketDstChannel,
-						},
-						{
-							Key:   chantypes.AttributeKeyDstPort,
-							Value: testPacketDstPort,
-						},
-					},
+					Key:   chantypes.AttributeKeySequence,
+					Value: testPacketSequence,
 				},
 				{
-					Type: chantypes.EventTypeWriteAck,
-					Attributes: []sdk.Attribute{
-						{
-							Key:   chantypes.AttributeKeyAckHex,
-							Value: testPacketAckHex,
-						},
-					},
+					Key:   chantypes.AttributeKeyDataHex,
+					Value: testPacketDataHex,
+				},
+				{
+					Key:   chantypes.AttributeKeyTimeoutHeight,
+					Value: testPacketTimeoutHeight,
+				},
+				{
+					Key:   chantypes.AttributeKeyTimeoutTimestamp,
+					Value: testPacketTimeoutTimestamp,
+				},
+				{
+					Key:   chantypes.AttributeKeySrcChannel,
+					Value: testPacketSrcChannel,
+				},
+				{
+					Key:   chantypes.AttributeKeySrcPort,
+					Value: testPacketSrcPort,
+				},
+				{
+					Key:   chantypes.AttributeKeyDstChannel,
+					Value: testPacketDstChannel,
+				},
+				{
+					Key:   chantypes.AttributeKeyDstPort,
+					Value: testPacketDstPort,
+				},
+			},
+		},
+		{
+			Type: chantypes.EventTypeWriteAck,
+			Attributes: []abci.EventAttribute{
+				{
+					Key:   chantypes.AttributeKeySequence,
+					Value: testPacketSequence,
+				},
+				{
+					Key:   chantypes.AttributeKeyAckHex,
+					Value: testPacketAckHex,
+				},
+				{
+					Key:   chantypes.AttributeKeySrcChannel,
+					Value: testPacketSrcChannel,
+				},
+				{
+					Key:   chantypes.AttributeKeySrcPort,
+					Value: testPacketSrcPort,
+				},
+				{
+					Key:   chantypes.AttributeKeyDstChannel,
+					Value: testPacketDstChannel,
+				},
+				{
+					Key:   chantypes.AttributeKeyDstPort,
+					Value: testPacketDstPort,
 				},
 			},
 		},
 	}
 
-	ibcMessages := parseABCILogs(zap.NewNop(), abciLogs, 0)
+	ibcMessages := ibcMessagesFromEvents(zap.NewNop(), events, "", 0, false)
 
-	require.Len(t, ibcMessages, 2)
+	require.Len(t, ibcMessages, 3)
 
 	msgUpdateClient := ibcMessages[0]
 	require.Equal(t, clienttypes.EventTypeUpdateClient, msgUpdateClient.eventType)
@@ -310,7 +322,13 @@ func TestParseEventLogs(t *testing.T) {
 	require.Equal(t, chantypes.EventTypeRecvPacket, msgRecvPacket.eventType, "message event is not recv_packet")
 
 	packetInfoParsed, isPacketInfo := msgRecvPacket.info.(*packetInfo)
-	require.True(t, isPacketInfo, "messageInfo is not packetInfo")
+	require.True(t, isPacketInfo, "recv_packet messageInfo is not packetInfo")
+
+	msgWriteAcknowledgement := ibcMessages[2]
+	require.Equal(t, chantypes.EventTypeWriteAck, msgWriteAcknowledgement.eventType, "message event is not write_acknowledgement")
+
+	ackPacketInfoParsed, isPacketInfo := msgWriteAcknowledgement.info.(*packetInfo)
+	require.True(t, isPacketInfo, "ack messageInfo is not packetInfo")
 
 	packetAck, err := hex.DecodeString(testPacketAckHex)
 	require.NoError(t, err, "error decoding test packet ack")
@@ -330,6 +348,14 @@ func TestParseEventLogs(t *testing.T) {
 		SourcePort:       testPacketSrcPort,
 		DestChannel:      testPacketDstChannel,
 		DestPort:         testPacketDstPort,
-		Ack:              packetAck,
+	}), "parsed packet info does not match expected")
+
+	require.Empty(t, cmp.Diff(provider.PacketInfo(*ackPacketInfoParsed), provider.PacketInfo{
+		Sequence:      uint64(1),
+		SourceChannel: testPacketSrcChannel,
+		SourcePort:    testPacketSrcPort,
+		DestChannel:   testPacketDstChannel,
+		DestPort:      testPacketDstPort,
+		Ack:           packetAck,
 	}), "parsed packet info does not match expected")
 }
